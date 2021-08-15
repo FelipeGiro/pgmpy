@@ -29,9 +29,10 @@ class DynamicNode:
             raise IndexError(f"Index {idx} out of bounds.")
 
     def __str__(self) -> str:
-        return f"{self.node}_{self.time_slice}"
+        return f"({self.node}, {self.time_slice})"
 
-    __repr__ = __str__
+    def __repr__(self) -> str:
+        return f"<DynamicNode({self.node}, {self.time_slice}) at {hex(id(self))}>"
 
     def __lt__(self, other) -> bool:
         if self.node < other.node:
@@ -189,6 +190,16 @@ class DynamicBayesianNetwork(DAG):
             set(
                 [
                     node
+                    for node, timeslice in super(DynamicBayesianNetwork, self).nodes()
+                ]
+            )
+        )
+
+    def _timeslices(self):
+        return list(
+            set(
+                [
+                    timeslice
                     for node, timeslice in super(DynamicBayesianNetwork, self).nodes()
                 ]
             )
@@ -461,7 +472,7 @@ class DynamicBayesianNetwork(DAG):
 
         self.cpds.extend(cpds)
 
-    def get_cpds(self, node=None, time_slice=0):
+    def get_cpds(self, node=None, time_slice=None):
         """
         Returns the CPDs that have been associated with the network.
 
@@ -488,7 +499,23 @@ class DynamicBayesianNetwork(DAG):
         >>> dbn.add_cpds(grade_cpd)
         >>> dbn.get_cpds()
         """
-        # TODO: fix bugs in this
+
+        if time_slice is None:
+            time_slices = self._timeslices()
+        elif isinstance(time_slice, int) and time_slice >= 0:
+            time_slices = [time_slice]
+        elif isinstance(time_slice, typing.Iterable):
+            if all(isinstance(n, int) for n in time_slice):
+                time_slices = time_slice
+            else:
+                raise ValueError(
+                    "At least one element inside time_slice interable is not positive and/or integer"
+                )
+        else:
+            raise ValueError(
+                "Time slice is not a positive integer neither a interable of integers"
+            )
+
         if node:
             if node not in super(DynamicBayesianNetwork, self).nodes():
                 raise ValueError("Node not present in the model.")
@@ -498,10 +525,11 @@ class DynamicBayesianNetwork(DAG):
                         return cpd
         else:
             return_cpds = []
-            for var in self.get_slice_nodes(time_slice=time_slice):
-                cpd = self.get_cpds(node=var)
-                if cpd:
-                    return_cpds.append(cpd)
+            for time_slice in time_slices:
+                for var in self.get_slice_nodes(time_slice=time_slice):
+                    cpd = self.get_cpds(node=var)
+                    if cpd:
+                        return_cpds.append(cpd)
             return return_cpds
 
     def remove_cpds(self, *cpds):
@@ -756,9 +784,7 @@ class DynamicBayesianNetwork(DAG):
         """
         from pgmpy.models import BayesianNetwork
 
-        return BayesianNetwork(
-            ebunch=[(f"{u[0]}_{u[1]}", f"{v[0]}_{v[1]}") for (u, v) in self.edges()]
-        )
+        return BayesianNetwork(ebunch=self.edges())
 
     def fit(self, data, estimator="MLE"):
         """
@@ -823,7 +849,9 @@ class DynamicBayesianNetwork(DAG):
             colnames.extend([(node, t_slice + 1) for node in self._nodes()])
 
             df_slice = data.loc[:, colnames]
-            new_colnames = [f"{node}_{t - t_slice}" for (node, t) in df_slice.columns]
+            new_colnames = [
+                DynamicNode(node, t - t_slice) for (node, t) in df_slice.columns
+            ]
             df_slice.columns = new_colnames
             if t_slice == 0:
                 const_bn.fit(df_slice)
@@ -832,14 +860,12 @@ class DynamicBayesianNetwork(DAG):
 
         cpds = []
         for cpd in const_bn.cpds:
-            variables = [var.split("_") for var in cpd.variables]
-            variables = [(v, int(t)) for v, t in variables]
             cpds.append(
                 TabularCPD(
-                    variable=variables[0],
+                    variable=cpd.variables[0],
                     variable_card=cpd.variable_card,
                     values=cpd.get_values(),
-                    evidence=variables[1:],
+                    evidence=cpd.variables[1:],
                     evidence_card=cpd.cardinality[1:],
                 )
             )
